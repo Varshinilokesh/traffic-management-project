@@ -1,0 +1,574 @@
+from flask import Flask, render_template, request, Response, session, jsonify, send_file
+import plotly.express as px
+from plotly.io import to_html
+import pandas as pd
+import json
+from ultralytics import YOLO
+from sklearn.linear_model import LinearRegression
+import yt_dlp
+import cvzone
+import cv2
+import numpy as np
+from pytube import YouTube
+import time
+from yolov8.tracker import * # your existing tracker
+import plotly.graph_objects as go
+from joblib import load
+import os
+from datetime import datetime, timedelta
+import threading
+from queue import Queue, Empty
+import math
+
+
+app = Flask(__name__)
+app.secret_key = 'your_secret_key'
+
+# ------------------------------
+# File paths & constants
+# ------------------------------
+DATA_DIR = 'data'
+CSV_FILE = os.path.join(DATA_DIR, "traffic_counts.csv") # ✅ single file
+GEOJSON_PATH = os.path.join(DATA_DIR, 'map.geojson')
+MODEL_PATH = 'model.joblib' # optional existing classifier (0..3)
+import joblib
+model = joblib.load("traffic_model.pkl")
+
+# Ensure data directory exists
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# ✅ City mapping for each video index
+CITY_MAP = {
+    0: "Tokyo",
+    1: "Colorado",
+    2: "New York",
+    3: "Roswell"
+}
+
+# ------------------------------
+# Helpers: GeoJSON + YouTube
+# ------------------------------
+
+def load_geojson():
+    with open(GEOJSON_PATH) as f:
+        return json.load(f)
+
+
+def get_livestream_url(youtube_url: str) -> str:
+    ydl_opts = {
+        'cookiefile': cookies_file, # ✅ force yt-dlp to use cookies
+        'format': 'best',
+        'quiet': True,
+        'skip_download': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info_dict = ydl.extract_info(youtube_url, download=False)
+        return info_dict['url']
+
+
+youtube_urls = [
+    "https://www.youtube.com/watch?v=6dp-bvQ7RWo", # Tokyo
+    "https://www.youtube.com/watch?v=B0YjuKbVZ5w", # Colorado
+    "https://www.youtube.com/watch?v=rnXIjl_Rzy4", # New York
+    "https://www.youtube.com/watch?v=__S1lZ6t1qg", # Roswell
+]
+
+cookies_file = "C:/Users/Lenovo/OneDrive/Desktop/yolo model/cookies.txt"
+
+ydl_opts = {
+    'cookiefile': cookies_file,
+    'quiet': True,
+    'skip_download': True,
+}
+# ------------------------------
+# Models
+# ------------------------------
+model_yolo = YOLO('yolov8/yolov8s.pt')
+
+# Try load user's pre-trained classifier if available (expects output in {0,1,2,3})
+model_predict = None
+try:
+    if os.path.exists(MODEL_PATH):
+        model_predict = load(MODEL_PATH)
+except Exception:
+    model_predict = None
+
+# ------------------------------
+# Globals for stream state
+# ------------------------------
+latest_frames = {} # {video_index: latest_frame_bytes}
+
+stream_url = ''
+vehicle_counts_buffer = [] # rolling buffer for ~5s averages
+predicted_output = 0 # color level used on map
+last_reset_time = time.time()
+
+# Color/label mapping kept from your app
+LABEL_TO_IDX = {"Heavy": 0, "High": 1, "Low": 2, "Normal": 3}
+IDX_TO_LABEL = {v: k for k, v in LABEL_TO_IDX.items()}
+COLOR_MAP = {0: 'red', 1: 'green', 2: 'blue', 3: 'yellow'}
+
+# ------------------------------
+# Persistence utilities
+# ------------------------------
+
+def _ensure_counts_csv():
+    if not os.path.exists(CSV_FILE):
+        pd.DataFrame(
+            columns=['timestamp', 'city', 'video_index', 'car', 'bus', 'truck', 'total']
+        ).to_csv(CSV_FILE, index=False)
+
+def save_counts_row(ts: float, video_index: int, car: int, bus: int, truck: int, total: int) -> None:
+    _ensure_counts_csv()
+    row = pd.DataFrame([{
+        'timestamp': int(ts),
+        'city': CITY_MAP.get(video_index, f"City_{video_index}"), # ✅ add city
+        'video_index': int(video_index),
+        'car': int(car),
+        'bus': int(bus),
+        'truck': int(truck),
+        'total': int(total),
+    }])
+    row.to_csv(CSV_FILE, mode='a', header=False, index=False)
+
+
+# --------------------------------------------------------
+# 🎯 MODIFIED: Data Loading with 365-Day Fallback
+# --------------------------------------------------------
+def read_last_samples(city: str, now_utc: float | None = None) -> pd.DataFrame:
+    _ensure_counts_csv()
+    df = pd.read_csv(CSV_FILE)
+    if df.empty:
+        return pd.DataFrame(columns=['timestamp', 'city', 'total'])
+
+    df = df[df['city'] == city] # ✅ filter by city
+    if df.empty:
+        return pd.DataFrame(columns=['timestamp', 'city', 'total'])
+
+    if now_utc is None:
+        now_utc = time.time()
+        
+    # Primary window: Last 7 days
+    recent_limit = now_utc - 7 * 86400  
+    # Secondary window: Last 365 days (Full Year Fallback)
+    fallback_limit = now_utc - 365 * 86400 
+
+    # Try to get data from the primary (7-day) window
+    recent_df = df[df['timestamp'] >= recent_limit]
+    
+    if not recent_df.empty:
+        # If we have recent data, use only that.
+        return recent_df.reset_index(drop=True)
+    
+    # If primary window is empty, fall back to the larger window (up to 365 days)
+    fallback_df = df[df['timestamp'] >= fallback_limit]
+    
+    return fallback_df.reset_index(drop=True)
+
+
+# --------------------------------------------------------
+# 🎯 MODIFIED: Update to call the new read_last_samples
+# --------------------------------------------------------
+def last_week_interval_totals(city: str, now_utc: float | None = None) -> pd.DataFrame:
+    samples = read_last_samples(city, now_utc)
+    if samples.empty:
+        return pd.DataFrame(columns=['date', 'interval', 'interval_total'])
+    
+    samples['dt'] = pd.to_datetime(samples['timestamp'], unit='s')
+    samples['date'] = samples['dt'].dt.date
+    samples['hour'] = samples['dt'].dt.hour
+    samples['interval'] = (samples['hour'] // 2) * 2
+    
+    interval_df = (
+        samples.groupby(['date', 'interval'], as_index=False)['total']
+        .sum()
+        .rename(columns={'total': 'interval_total'})
+    )
+    return interval_df.sort_values(['date', 'interval']).reset_index(drop=True)
+
+
+# --------------------------------------------------------
+# 🎯 MODIFIED: Prediction for Today's Remaining Intervals
+# --------------------------------------------------------
+def predict_today_intervals_remaining(city: str, now_utc: float | None = None) -> dict:
+    """
+    Predicts traffic totals for TODAY's remaining 2-hour intervals.
+    """
+    if now_utc is None:
+        now_utc = time.time()
+        
+    # Determine the current 2-hour interval (e.g., 10 for 10:00-12:00)
+    current_hour = datetime.fromtimestamp(now_utc).hour
+    
+    # Start loop from the NEXT 2-hour interval (e.g., 12:00 if current is 10:00)
+    start_interval = ((current_hour // 2) * 2) + 2
+    
+    interval_df = last_week_interval_totals(city, now_utc)
+
+    preds = []
+    
+    # Loop over TODAY's remaining 2-hour blocks (up to 24:00)
+    for interval in range(start_interval, 24, 2):
+        # history for THIS interval across the last X days/weeks
+        hist = (
+            interval_df[interval_df['interval'] == interval]
+            .sort_values('date')
+        )
+
+        if hist.empty:
+            y_next = 0.0 # <-- no data for this time-of-day → predict 0
+        else:
+            y = hist['interval_total'].to_numpy(dtype=float)
+            n = len(y)
+
+            # Use a simple trend only within this interval’s history
+            if n >= 3:
+                X = np.arange(n).reshape(-1, 1)
+                lr = LinearRegression().fit(X, y)
+                # Predict the next value (index n) in the trend
+                y_next = float(lr.predict([[n]])[0]) 
+            else:
+                # With 1–2 samples, just average THIS interval’s values
+                y_next = float(np.mean(y))
+
+        preds.append({
+            'interval': f"{interval:02d}:00-{(interval + 2) % 24:02d}:00",
+            'predicted_total': int(round(max(0, y_next)))
+        })
+
+    # Note: interval_df now contains up to 365 days of history for this city
+    return {'ok': True, 'predictions': preds, 'history': interval_df.to_dict(orient='records')}
+
+# ------------------------------
+# Frame processing
+# ------------------------------
+
+# ------------------------------
+# Improved producer/consumer for each stream
+# ------------------------------
+
+# configuration tuning
+CAPTURE_WIDTH = 640 # smaller -> much faster inference
+CAPTURE_HEIGHT = 360
+PROCESS_FPS = 5 # target inference frames per second per stream
+QUEUE_MAXSIZE = 3 # keep very small to avoid backlog
+PRED_INTERVAL_SECONDS = 10 # keep your 30s averaging save
+
+def start_capture_thread(stream_url: str, frame_queue: Queue, stop_event):
+    """
+    Capture thread: reads frames from the stream and pushes into the queue.
+    Drops oldest frame when queue is full (so processing consumes the newest frames).
+    """
+    cap = cv2.VideoCapture(stream_url)
+    # Try to reduce internal buffer
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
+
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            # stream temporarily failed — small sleep and retry
+            time.sleep(0.5)
+            continue
+
+        # Resize once here for speed (smaller)
+        frame = cv2.resize(frame, (CAPTURE_WIDTH, CAPTURE_HEIGHT))
+
+        # Non-blocking put; if full, drop oldest and put newest
+        try:
+            frame_queue.put_nowait(frame)
+        except:
+            try:
+                _ = frame_queue.get_nowait() # drop oldest
+            except Empty:
+                pass
+            try:
+                frame_queue.put_nowait(frame)
+            except:
+                pass
+
+    cap.release()
+
+
+def start_processing_thread(video_index: int, frame_queue: Queue, out_frame_queue: Queue, stop_event):
+    """
+    Processing thread: runs YOLO on frames from frame_queue at limited FPS,
+    draws boxes, saves counts every PRED_INTERVAL_SECONDS.
+    Puts final JPEG bytes into out_frame_queue used by the HTTP response generator.
+    """
+    tracker = Tracker()
+    global model_yolo, last_reset_time
+    last_save = time.time()
+    vehicle_buffer = []
+
+    # load class list once
+    with open("yolov8/coco.txt", "r") as my_file:
+        class_list = my_file.read().split("\n")
+
+    # compute wait between processing frames to cap FPS
+    wait_between = 1.0 / PROCESS_FPS
+
+    while not stop_event.is_set():
+        start = time.time()
+        try:
+            frame = frame_queue.get(timeout=1.0)
+        except Empty:
+            continue
+
+        # run inference (small image size, low verbosity)
+        # use model.predict with imgsz to keep consistent speed
+        results = model_yolo.predict(frame, imgsz=640, conf=0.35, verbose=False)
+        detections = results[0].boxes.data
+        px = pd.DataFrame(detections).astype("float") if detections is not None else pd.DataFrame()
+
+        cars, buses, trucks = [], [], []
+        for _, row in px.iterrows():
+            x1, y1, x2, y2, conf, cls_id = int(row[0]), int(row[1]), int(row[2]), int(row[3]), row[4], int(row[5])
+            c = class_list[cls_id].lower()
+            if 'car' in c:
+                cars.append([x1, y1, x2, y2])
+            elif 'bus' in c:
+                buses.append([x1, y1, x2, y2]) 
+            elif 'truck' in c:
+                trucks.append([x1, y1, x2, y2])
+
+        cars_boxes = tracker.update(cars)
+        buses_boxes = tracker.update(buses)
+        trucks_boxes = tracker.update(trucks)
+
+        # Draw boxes & labels
+        draw_frame = frame.copy()
+        for bbox in cars_boxes:
+            cv2.rectangle(draw_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 255), 2)
+            cvzone.putTextRect(draw_frame, 'Car', (bbox[0], bbox[1] - 10), 1, 1)
+        for bbox in buses_boxes:
+            cv2.rectangle(draw_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 255), 2)
+            cvzone.putTextRect(draw_frame, 'Bus', (bbox[0], bbox[1] - 10), 1, 1)
+        for bbox in trucks_boxes:
+            cv2.rectangle(draw_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 255), 2)
+            cvzone.putTextRect(draw_frame, 'Truck', (bbox[0], bbox[1] - 10), 1, 1)
+
+        car_count = len(cars_boxes)
+        bus_count = len(buses_boxes)
+        truck_count = len(trucks_boxes)
+        total_count = car_count + bus_count + truck_count
+
+        vehicle_buffer.append([car_count, bus_count, truck_count, total_count])
+
+        # periodic save average
+        now = time.time()
+        if now - last_save >= PRED_INTERVAL_SECONDS:
+            avg = np.mean(vehicle_buffer, axis=0) if vehicle_buffer else [0, 0, 0, 0]
+            vehicle_buffer = []
+            last_save = now
+            save_counts_row(ts=now, video_index=video_index,
+                            car=int(round(avg[0])), bus=int(round(avg[1])),
+                            truck=int(round(avg[2])), total=int(round(avg[3])))
+
+        cvzone.putTextRect(draw_frame,
+                            f'Car: {car_count}, Bus: {bus_count}, Truck: {truck_count}, Total: {total_count}',
+                            (10, CAPTURE_HEIGHT - 10), 1, 1)
+
+        # encode and put into out queue (drop if out queue full)
+        ret, buffer = cv2.imencode('.jpg', draw_frame)
+        if ret:
+            frame_bytes = buffer.tobytes()
+            try:
+                out_frame_queue.put_nowait(frame_bytes)
+            except:
+                try:
+                    _ = out_frame_queue.get_nowait() # drop oldest
+                except Empty:
+                    pass
+                try:
+                    out_frame_queue.put_nowait(frame_bytes)
+                except:
+                    pass
+
+        # enforce processing fps cap
+        elapsed = time.time() - start
+        if elapsed < wait_between:
+            time.sleep(wait_between - elapsed)
+
+
+def generate_frames_from_queue(out_frame_queue: Queue, stop_event):
+    """
+    HTTP generator: yields latest JPEG bytes from out_frame_queue.
+    Always yields the newest available frame (drops older ones).
+    """
+    while not stop_event.is_set():
+        try:
+            frame_bytes = out_frame_queue.get(timeout=1.0)
+        except Empty:
+            continue
+        yield (b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+# ------------------------------
+# Updated route implementation to wire queues per video_index
+# ------------------------------
+
+# We'll keep global maps per index
+capture_queues = {}
+process_out_queues = {}
+stream_threads = {}
+stop_events = {}
+
+def ensure_stream_started(video_index: int):
+    """
+    Ensure background threads (capture + processing) are started for this video_index.
+    """
+    if video_index in stream_threads:
+        return
+
+    # get the actual playable stream URL once
+    url = get_livestream_url(youtube_urls[video_index])
+
+    frame_q = Queue(maxsize=QUEUE_MAXSIZE)
+    out_q = Queue(maxsize=1) # only need latest for HTTP feed
+    stop_ev = threading.Event()
+
+    t_cap = threading.Thread(target=start_capture_thread, args=(url, frame_q, stop_ev), daemon=True)
+    t_proc = threading.Thread(target=start_processing_thread, args=(video_index, frame_q, out_q, stop_ev), daemon=True)
+
+    t_cap.start()
+    t_proc.start()
+
+    capture_queues[video_index] = frame_q
+    process_out_queues[video_index] = out_q
+    stream_threads[video_index] = (t_cap, t_proc)
+    stop_events[video_index] = stop_ev
+
+
+
+# ------------------------------
+# Flask routes
+# ------------------------------
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    global stream_url, predicted_output
+
+    video_index = request.args.get('video_index', default=0, type=int)
+    city = CITY_MAP.get(video_index, f"City_{video_index}") # ✅ get city
+    stream_url = get_livestream_url(youtube_urls[video_index])
+
+    geojson_data = load_geojson()
+    df = pd.DataFrame({'name': ['Heavy', 'High', 'Low', 'Normal'], 'value': [0, 1, 2, 3]})
+
+    centers = [
+        {"lat": 35.6936, "lon": 139.6991, "name": 'Shinjukugado-W, Tokyo, Japan'},
+        {"lat": 39.5473, "lon": -107.3247, "name": 'Colorado Mountain College, USA'},
+        {"lat": 40.7579, "lon": -73.9855, "name": 'Times Square, New York, USA'},
+        {"lat": 33.3973, "lon": -104.5227, "name": 'Roswell, New Mexico, USA'},
+    ]
+    c = centers[min(max(video_index, 0), len(centers) - 1)]
+
+    fig = px.choropleth_mapbox(
+        df,
+        geojson=geojson_data,
+        locations='name',
+        color='name',
+        mapbox_style='open-street-map',
+        zoom=15,
+        center={"lat": c["lat"], "lon": c["lon"]},
+        opacity=0.5,
+        labels={'name': 'Traffic Situation'},
+        width=750,
+        height=560,
+        color_discrete_map={"Heavy": "red", "High": "green", "Low": "blue", 'Normal': 'yellow'},
+    )
+
+    line_data = pd.DataFrame({'lat': [c['lat'] + 0.0006, c['lat'] - 0.0006], 'lon': [c['lon'] - 0.0003, c['lon'] + 0.0003]})
+    fig.add_trace(go.Scattermapbox(
+        lat=line_data['lat'],
+        lon=line_data['lon'],
+        mode='lines+markers',
+        marker=go.scattermapbox.Marker(size=8),
+        line=dict(width=4, color='blue'),
+        name=c['name'],
+    ))
+
+    line_color = COLOR_MAP.get(int(predicted_output), 'gray')
+    fig.data[-1].line.color = line_color
+    fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0})
+
+    graph_html = fig.to_html(full_html=False)
+
+    # --------------------------------------------------------
+    # 🎯 MODIFIED: Call the "Today's Remaining" prediction function
+    # --------------------------------------------------------
+    tmr = predict_today_intervals_remaining(city) 
+    tmr_preds = tmr.get('predictions') if tmr.get('ok') else []
+
+    # Keeping variable names 'tomorrow_total'/'tomorrow_level' for minimal HTML change
+    if tmr_preds:
+        tomorrow_total = sum(p['predicted_total'] for p in tmr_preds)
+        if tomorrow_total < 500:
+            tomorrow_level = "Low"
+        elif tomorrow_total < 1500:
+            tomorrow_level = "Medium"
+        elif tomorrow_total < 3000:
+            tomorrow_level = "High"
+        else:
+            tomorrow_level = "Heavy"
+    else:
+        tomorrow_total = None
+        tomorrow_level = None
+
+    return render_template(
+        'index.html',
+        graph_html=graph_html,
+        video_index=video_index,
+        tomorrow_preds=tmr_preds,
+        tomorrow_total=tomorrow_total,
+        tomorrow_level=tomorrow_level,
+        city=city # ✅ pass city to template
+    )
+
+
+# Replace /video_feed route's generator use:
+@app.route('/video_feed')
+def video_feed():
+    video_index = request.args.get('video_index', default=0, type=int)
+    ensure_stream_started(video_index)
+    out_q = process_out_queues.get(video_index)
+    if out_q is None:
+        return "Stream not available", 503
+
+    # The Response will use the generator that yields bytes from the out queue
+    return Response(generate_frames_from_queue(out_q, stop_events[video_index]),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+# --------------------------------------------------------
+# 🎯 MODIFIED: /predict_tomorrow route now calls the 'Today' function
+# --------------------------------------------------------
+@app.route('/predict_tomorrow')
+def predict_tomorrow_api():
+    video_index = request.args.get("video_index", default=0, type=int)
+    city = CITY_MAP.get(video_index, f"City_{video_index}") # ✅ filter by city
+    out = predict_today_intervals_remaining(city)
+    return jsonify(out)
+
+@app.route('/data.csv')
+def download_csv():
+    _ensure_counts_csv()
+    return send_file(
+        CSV_FILE,
+        as_attachment=True,
+        download_name="traffic_counts.csv",
+        mimetype='text/csv'
+    )
+
+# ------------------------------
+# Replace your __main__ startup with a minimal server-only start:
+# ------------------------------
+if __name__ == '__main__':
+    # do NOT start process_stream for each stream here anymore
+    # Flask will lazily start capture+process threads per requested video_index in ensure_stream_started
+    for video_index in CITY_MAP.keys():
+        ensure_stream_started(video_index)
+    app.run(debug=True, threaded=True)
