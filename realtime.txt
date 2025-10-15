@@ -141,13 +141,17 @@ def read_last_samples(city: str, now_utc: float | None = None) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=['timestamp', 'city', 'total'])
 
-    df = df[df['city'] == city] # ✅ filter by city
+    df = df[df['city'] == city]  # ✅ filter by city
     if df.empty:
         return pd.DataFrame(columns=['timestamp', 'city', 'total'])
 
     if now_utc is None:
         now_utc = time.time()
         
+    # ✅ Convert timestamp column to float
+    df['timestamp'] = pd.to_numeric(df['timestamp'], errors='coerce')
+    df = df.dropna(subset=['timestamp'])
+    
     # Primary window: Last 7 days
     recent_limit = now_utc - 7 * 86400  
     # Secondary window: Last 365 days (Full Year Fallback)

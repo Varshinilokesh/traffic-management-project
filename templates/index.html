@@ -58,7 +58,8 @@
             box-shadow: 0 0 5px rgba(41, 128, 185, 0.3);
         }
 
-        .video-container, .graph-container, .prediction-container {
+        /* NEW: Styles for both video containers */
+        .raw-stream-container, .video-container, .graph-container, .prediction-container {
             max-width: 850px;
             width: 100%;
             margin: 20px auto;
@@ -69,10 +70,22 @@
             text-align: center;
         }
 
-        .video-container h3,
+        /* Differentiating the headings */
+        .raw-stream-container h3 {
+             color: #2980b9; /* Original stream: Blue */
+             font-weight: 600;
+             margin-bottom: 15px;
+        }
+        .video-container h3 {
+             color: #c0392b; /* Processed stream: Red/Distinct Color */
+             font-weight: 600;
+             margin-bottom: 15px;
+        }
+        /* End of Differentiating the headings */
+
         .graph-container h2,
         .prediction-container h2 {
-            color: #2980b9; /* calm professional blue */
+            color: #2980b9;
             font-weight: 600;
             margin-bottom: 15px;
         }
@@ -94,7 +107,7 @@
         table {
             border-collapse: collapse;
             margin: 25px auto;
-            width: 60%;
+            width: 80%; 
             background: #fff;
             border-radius: 10px;
             overflow: hidden;
@@ -153,8 +166,25 @@
         </select>
     </div>
 
+    <div class="raw-stream-container">
+        <h3>Original YouTube Live Stream</h3>
+        {% if youtube_embed_url %}
+        <iframe 
+            width="750" 
+            height="422" 
+            src="{{ youtube_embed_url }}"
+            frameborder="0" 
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+            allowfullscreen 
+            style="border-radius: 8px;">
+        </iframe>
+        {% else %}
+        <p class="no-data">Could not load original YouTube stream (Invalid URL or ID).</p>
+        {% endif %}
+    </div>
+
     <div class="video-container">
-        <h3>Live Stream</h3>
+        <h3>Processed Frames from Live Stream</h3>
         <img src="{{ url_for('video_feed', video_index=video_index) }}" width="750" height="560" style="border-radius: 8px;">
     </div>
 
@@ -164,23 +194,25 @@
     </div>
 
     <div class="prediction-container">
-        <h2>Predicted Traffic for Today's Remaining Intervals</h2>
-        {% if tomorrow_level and tomorrow_total %}
-            <p>Level: <strong style="color:#e74c3c;">{{ tomorrow_level }}</strong></p>
-            <p>Expected Total Vehicles: <strong style="color:#27ae60;">{{ tomorrow_total }}</strong></p>
+        <h2>Predicted Traffic for Next 24 Hours</h2>
+        {% if total_level and total_24h %}
+            <p>Overall Level: <strong style="color:#e74c3c;">{{ total_level }}</strong></p>
+            <p>Expected Total Vehicles: <strong style="color:#27ae60;">{{ total_24h }}</strong></p>
         {% else %}
-            <p class="no-data">No prediction available. Collect more historical data to see the forecast for the rest of today.</p>
+            <p class="no-data">No prediction available. Collect more historical data to see the forecast for the next 24 hours.</p>
         {% endif %}
     </div>
 </div>
 
-{% if tomorrow_preds %}
-    <h3>Today's Remaining 2-Hour Traffic Predictions</h3>
+{% if hourly_preds %}
+    <h3>Next 24 Hours Hourly Traffic Predictions (Starting Now)</h3>
     <table>
-        <tr><th>Interval</th><th>Predicted Traffic</th></tr>
-        {% for p in tomorrow_preds %}
+        <tr><th>Date</th><th>Day</th><th>Interval</th><th>Predicted Traffic</th></tr>
+        {% for p in hourly_preds %}
             <tr>
-                <td>{{ p.interval }}</td>
+                <td>{{ p.date }}</td>
+                <td>{{ p.day_of_week }}</td>
+                <td>{{ p.interval }}</td> 
                 <td>{{ p.predicted_total }}</td>
             </tr>
         {% endfor %}
