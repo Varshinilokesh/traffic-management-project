@@ -1,270 +1,334 @@
-from flask import Flask, render_template, request, Response, session, jsonify, send_file
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vehicles Flow Map</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f9fafb; /* clean light background */
+            margin: 0;
+            padding: 0;
+            color: #333;
+        }
+        
+        h1 {
+            text-align: center;
+            font-size: 46px;
+            color: #2c3e50; /* deep slate */
+            margin: 25px 0;
+            font-weight: 600;
+        }
+
+        .main-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 10px;
+        }
+
+        .input-container {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        label {
+            font-size: 18px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            display: block;
+            color: #34495e;
+        }
+
+        select {
+            padding: 10px 14px;
+            font-size: 16px;
+            border-radius: 8px;
+            border: 1px solid #b0bec5;
+            background: #ffffff;
+            color: #2c3e50;
+            transition: all 0.3s ease;
+        }
+
+        select:hover, select:focus {
+            border-color: #2980b9;
+            outline: none;
+            box-shadow: 0 0 5px rgba(41, 128, 185, 0.3);
+        }
+
+        /* Styles for both video containers */
+        .raw-stream-container, .video-container, .graph-container, .prediction-container {
+            max-width: 850px;
+            width: 100%;
+            margin: 20px auto;
+            border-radius: 12px;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+            background-color: #ffffff;
+            padding: 20px;
+            text-align: center;
+        }
+
+        /* Differentiating the headings */
+        .raw-stream-container h3 {
+             color: #2980b9; /* Original stream: Blue */
+             font-weight: 600;
+             margin-bottom: 15px;
+        }
+        .video-container h3 {
+             color: #c0392b; /* Processed stream: Red/Distinct Color */
+             font-weight: 600;
+             margin-bottom: 15px;
+        }
+
+        .graph-container h2,
+        .prediction-container h2 {
+            color: #2980b9;
+            font-weight: 600;
+            margin-bottom: 15px;
+        }
+
+        .prediction-container p {
+            font-size: 18px;
+            margin: 6px 0;
+        }
+
+        .prediction-container strong {
+            font-weight: 600;
+        }
+
+        .no-data {
+            color: #e74c3c;
+            font-weight: 500;
+        }
+
+        table {
+            border-collapse: collapse;
+            margin: 25px auto;
+            width: 60%; /* FIX 3: Shortened table width */
+            background: #fff;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.08);
+        }
+
+        table th {
+            background: #2980b9;
+            color: white;
+            padding: 12px;
+            font-size: 16px;
+            font-weight: 500;
+            text-align: center;
+        }
+
+        table td {
+            padding: 10px;
+            font-size: 15px;
+            border-bottom: 1px solid #ecf0f1;
+            text-align: center;
+            color: #34495e;
+        }
+
+        table tr:last-child td {
+            border-bottom: none;
+        }
+
+        h3 {
+            text-align: center;
+            font-size: 22px;
+            color: #2c3e50;
+            margin-top: 30px;
+        }
+
+        .footer {
+            margin-top: 25px;
+            padding: 10px;
+            text-align: center;
+            font-size: 14px;
+            color: #7f8c8d;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Vehicles Flow Map</h1>
+
+<div class="main-container">
+    <div class="input-container">
+        <label for="videoSelect">Select Location:</label>
+        <select id="videoSelect" onchange="changeVideo()">
+            <option value="0" {% if video_index == 0 %}selected{% endif %}>Shinjukugado-W, Tokyo, Japan</option>
+            <option value="1" {% if video_index == 1 %}selected{% endif %}>Colorado Mountain College, USA</option>
+            <option value="2" {% if video_index == 2 %}selected{% endif %}>Times Square, New York, USA</option>
+            <option value="3" {% if video_index == 3 %}selected{% endif %}>Roswell, New Mexico, USA</option>
+        </select>
+        
+        <div style="margin-top: 15px;">
+             <label for="historicalDates">Select Historical Dates (Comma-separated YYYY-MM-DD):</label>
+             <input type="text" id="historicalDates" name="historicalDates" 
+                    placeholder="e.g., 2025-10-02, 2025-10-05" 
+                    value="{{ selected_dates_str if selected_dates_str else '' }}"
+                    style="padding: 10px; border-radius: 8px; border: 1px solid #b0bec5; width: 300px;">
+             <button onclick="submitCustomDates()" style="padding: 10px 15px; border-radius: 8px; border: none; background-color: #2980b9; color: white; cursor: pointer;">Predict Now</button>
+             <p style="font-size: 14px; color: #7f8c8d; margin-top: 5px;">*Prediction uses the traffic patterns from these specific dates.</p>
+        </div>
+        
+    </div>
+
+    <div class="raw-stream-container">
+        <h3>Original YouTube Live Stream</h3>
+        {% if youtube_embed_url %}
+        <div style="position: relative; width: 750px; height: 422px; margin: 0 auto;">
+            <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 10;"></div> 
+            <iframe 
+                width="750" 
+                height="422" 
+                src="{{ youtube_embed_url }}"
+                frameborder="0" 
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                allowfullscreen 
+                style="border-radius: 8px; position: relative; z-index: 1;">
+            </iframe>
+        </div>
+        {% else %}
+        <p class="no-data">Could not load original YouTube stream (Invalid URL or ID).</p>
+        {% endif %}
+    </div>
+
+    <div class="video-container">
+        <h3>Processed Frames from Live Stream</h3>
+        <img src="{{ url_for('video_feed', video_index=video_index) }}" width="750" height="560" style="border-radius: 8px;">
+    </div>
+
+    <div class="graph-container">
+        <h2>Choropleth Map</h2>
+        <div>{{ graph_html | safe }}</div>
+    </div>
+
+    <div class="prediction-container">
+        <h2>Predicted Traffic for Next 24 Hours</h2>
+        {% if total_level and total_24h %}
+            <p>Overall Level: <strong style="color:#e74c3c;">{{ total_level }}</strong></p>
+            <p>Expected Total Vehicles: <strong style="color:#27ae60;">{{ total_24h }}</strong></p>
+        {% else %}
+            <p class="no-data">No prediction available. Collect more historical data to see the forecast for the next 24 hours.</p>
+        {% endif %}
+    </div>
+</div>
+
+{% if hourly_preds %}
+    <h3>Next 24 Hours Hourly Traffic Predictions (Starting Now)</h3>
+    <table>
+        <tr><th>Date</th><th>Day</th><th>Interval</th><th>Predicted Traffic</th></tr>
+        {% for p in hourly_preds %}
+            <tr>
+                <td>{{ p.date }}</td>
+                <td>{{ p.day_of_week }}</td>
+                <td>{{ p.interval }}</td> 
+                <td>{{ p.predicted_total }}</td>
+            </tr>
+        {% endfor %}
+    </table>
+{% else %}
+    <p style="text-align:center; color:#7f8c8d;">No prediction data available yet.</p>
+{% endif %}
+
+<div class="footer">
+    &copy; {{ 2025 }} Traffic Prediction System
+</div>
+
+<script>
+function changeVideo() {
+    const select = document.getElementById('videoSelect');
+    const videoIndex = select.value;
+    // Keep any existing historical_dates parameter when switching video
+    const currentDates = document.getElementById('historicalDates').value;
+    let url = `{{ url_for('index', video_index='') }}${videoIndex}`;
+    if (currentDates) {
+        url += `&historical_dates=${currentDates}`;
+    }
+    window.location.href = url;
+}
+
+function submitCustomDates() {
+    const select = document.getElementById('videoSelect');
+    const videoIndex = select.value;
+    const datesInput = document.getElementById('historicalDates').value;
+    // Redirect with both video_index and historical_dates as URL parameters
+    window.location.href = `{{ url_for('index', video_index='') }}${videoIndex}&historical_dates=${datesInput}`;
+}
+</script>
+
+</body>
+</html>
+
+
+from flask import Flask, render_template, request, Response, jsonify, send_file
 import plotly.express as px
-from plotly.io import to_html
+import plotly.graph_objects as go
 import pandas as pd
-import json
-from ultralytics import YOLO
-from sklearn.linear_model import LinearRegression
-import yt_dlp
 import cvzone
 import cv2
 import numpy as np
-from pytube import YouTube
 import time
-from yolov8.tracker import * # your existing tracker
-import plotly.graph_objects as go
-from joblib import load
-import os
-from datetime import datetime, timedelta
 import threading
 from queue import Queue, Empty
-import math
+import yt_dlp
+import os
+import re 
 
+# Import modules
+import config 
+import data_analysis
+from yolov8.tracker import Tracker # assuming tracker is available
 
+# ------------------------------
+# Flask App Setup
+# ------------------------------
 app = Flask(__name__)
 app.secret_key = 'your_secret_key'
 
 # ------------------------------
-# File paths & constants
+# Global State for Streaming
 # ------------------------------
-DATA_DIR = 'data'
-CSV_FILE = os.path.join(DATA_DIR, "traffic_counts.csv") # ✅ single file
-GEOJSON_PATH = os.path.join(DATA_DIR, 'map.geojson')
-MODEL_PATH = 'model.joblib' # optional existing classifier (0..3)
-import joblib
-model = joblib.load("traffic_model.pkl")
-
-# Ensure data directory exists
-os.makedirs(DATA_DIR, exist_ok=True)
-
-# ✅ City mapping for each video index
-CITY_MAP = {
-    0: "Tokyo",
-    1: "Colorado",
-    2: "New York",
-    3: "Roswell"
-}
+capture_queues = {}
+process_out_queues = {}
+stream_threads = {}
+stop_events = {}
+predicted_output = 0 # current prediction level for map color
 
 # ------------------------------
-# Helpers: GeoJSON + YouTube
+# Helpers
 # ------------------------------
-
-def load_geojson():
-    with open(GEOJSON_PATH) as f:
-        return json.load(f)
-
 
 def get_livestream_url(youtube_url: str) -> str:
+    """Uses yt_dlp to get the direct stream URL."""
     ydl_opts = {
-        'cookiefile': cookies_file, # ✅ force yt-dlp to use cookies
+        'cookiefile': config.cookies_file,
         'format': 'best',
         'quiet': True,
         'skip_download': True,
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info_dict = ydl.extract_info(youtube_url, download=False)
-        return info_dict['url']
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(youtube_url, download=False)
+            return info_dict['url']
+    except Exception as e:
+        print(f"Error fetching direct stream URL for {youtube_url}: {e}")
+        return None
 
-
-youtube_urls = [
-    "https://www.youtube.com/watch?v=6dp-bvQ7RWo", # Tokyo
-    "https://www.youtube.com/watch?v=B0YjuKbVZ5w", # Colorado
-    "https://www.youtube.com/watch?v=rnXIjl_Rzy4", # New York
-    "https://www.youtube.com/watch?v=__S1lZ6t1qg", # Roswell
-]
-
-cookies_file = "C:/Users/Lenovo/OneDrive/Desktop/yolo model/cookies.txt"
-
-ydl_opts = {
-    'cookiefile': cookies_file,
-    'quiet': True,
-    'skip_download': True,
-}
-# ------------------------------
-# Models
-# ------------------------------
-model_yolo = YOLO('yolov8/yolov8s.pt')
-
-# Try load user's pre-trained classifier if available (expects output in {0,1,2,3})
-model_predict = None
-try:
-    if os.path.exists(MODEL_PATH):
-        model_predict = load(MODEL_PATH)
-except Exception:
-    model_predict = None
 
 # ------------------------------
-# Globals for stream state
+# Threading/Streaming Logic
 # ------------------------------
-latest_frames = {} # {video_index: latest_frame_bytes}
-
-stream_url = ''
-vehicle_counts_buffer = [] # rolling buffer for ~5s averages
-predicted_output = 0 # color level used on map
-last_reset_time = time.time()
-
-# Color/label mapping kept from your app
-LABEL_TO_IDX = {"Heavy": 0, "High": 1, "Low": 2, "Normal": 3}
-IDX_TO_LABEL = {v: k for k, v in LABEL_TO_IDX.items()}
-COLOR_MAP = {0: 'red', 1: 'green', 2: 'blue', 3: 'yellow'}
-
-# ------------------------------
-# Persistence utilities
-# ------------------------------
-
-def _ensure_counts_csv():
-    if not os.path.exists(CSV_FILE):
-        pd.DataFrame(
-            columns=['timestamp', 'city', 'video_index', 'car', 'bus', 'truck', 'total']
-        ).to_csv(CSV_FILE, index=False)
-
-def save_counts_row(ts: float, video_index: int, car: int, bus: int, truck: int, total: int) -> None:
-    _ensure_counts_csv()
-    row = pd.DataFrame([{
-        'timestamp': int(ts),
-        'city': CITY_MAP.get(video_index, f"City_{video_index}"), # ✅ add city
-        'video_index': int(video_index),
-        'car': int(car),
-        'bus': int(bus),
-        'truck': int(truck),
-        'total': int(total),
-    }])
-    row.to_csv(CSV_FILE, mode='a', header=False, index=False)
-
-
-# --------------------------------------------------------
-# 🎯 MODIFIED: Data Loading with 365-Day Fallback
-# --------------------------------------------------------
-def read_last_samples(city: str, now_utc: float | None = None) -> pd.DataFrame:
-    _ensure_counts_csv()
-    df = pd.read_csv(CSV_FILE)
-    if df.empty:
-        return pd.DataFrame(columns=['timestamp', 'city', 'total'])
-
-    df = df[df['city'] == city]  # ✅ filter by city
-    if df.empty:
-        return pd.DataFrame(columns=['timestamp', 'city', 'total'])
-
-    if now_utc is None:
-        now_utc = time.time()
-        
-    # ✅ Convert timestamp column to float
-    df['timestamp'] = pd.to_numeric(df['timestamp'], errors='coerce')
-    df = df.dropna(subset=['timestamp'])
-    
-    # Primary window: Last 7 days
-    recent_limit = now_utc - 7 * 86400  
-    # Secondary window: Last 365 days (Full Year Fallback)
-    fallback_limit = now_utc - 365 * 86400 
-
-    # Try to get data from the primary (7-day) window
-    recent_df = df[df['timestamp'] >= recent_limit]
-    
-    if not recent_df.empty:
-        # If we have recent data, use only that.
-        return recent_df.reset_index(drop=True)
-    
-    # If primary window is empty, fall back to the larger window (up to 365 days)
-    fallback_df = df[df['timestamp'] >= fallback_limit]
-    
-    return fallback_df.reset_index(drop=True)
-
-
-# --------------------------------------------------------
-# 🎯 MODIFIED: Update to call the new read_last_samples
-# --------------------------------------------------------
-def last_week_interval_totals(city: str, now_utc: float | None = None) -> pd.DataFrame:
-    samples = read_last_samples(city, now_utc)
-    if samples.empty:
-        return pd.DataFrame(columns=['date', 'interval', 'interval_total'])
-    
-    samples['dt'] = pd.to_datetime(samples['timestamp'], unit='s')
-    samples['date'] = samples['dt'].dt.date
-    samples['hour'] = samples['dt'].dt.hour
-    samples['interval'] = (samples['hour'] // 2) * 2
-    
-    interval_df = (
-        samples.groupby(['date', 'interval'], as_index=False)['total']
-        .sum()
-        .rename(columns={'total': 'interval_total'})
-    )
-    return interval_df.sort_values(['date', 'interval']).reset_index(drop=True)
-
-
-# --------------------------------------------------------
-# 🎯 MODIFIED: Prediction for Today's Remaining Intervals
-# --------------------------------------------------------
-def predict_today_intervals_remaining(city: str, now_utc: float | None = None) -> dict:
-    """
-    Predicts traffic totals for TODAY's remaining 2-hour intervals.
-    """
-    if now_utc is None:
-        now_utc = time.time()
-        
-    # Determine the current 2-hour interval (e.g., 10 for 10:00-12:00)
-    current_hour = datetime.fromtimestamp(now_utc).hour
-    
-    # Start loop from the NEXT 2-hour interval (e.g., 12:00 if current is 10:00)
-    start_interval = ((current_hour // 2) * 2) + 2
-    
-    interval_df = last_week_interval_totals(city, now_utc)
-
-    preds = []
-    
-    # Loop over TODAY's remaining 2-hour blocks (up to 24:00)
-    for interval in range(start_interval, 24, 2):
-        # history for THIS interval across the last X days/weeks
-        hist = (
-            interval_df[interval_df['interval'] == interval]
-            .sort_values('date')
-        )
-
-        if hist.empty:
-            y_next = 0.0 # <-- no data for this time-of-day → predict 0
-        else:
-            y = hist['interval_total'].to_numpy(dtype=float)
-            n = len(y)
-
-            # Use a simple trend only within this interval’s history
-            if n >= 3:
-                X = np.arange(n).reshape(-1, 1)
-                lr = LinearRegression().fit(X, y)
-                # Predict the next value (index n) in the trend
-                y_next = float(lr.predict([[n]])[0]) 
-            else:
-                # With 1–2 samples, just average THIS interval’s values
-                y_next = float(np.mean(y))
-
-        preds.append({
-            'interval': f"{interval:02d}:00-{(interval + 2) % 24:02d}:00",
-            'predicted_total': int(round(max(0, y_next)))
-        })
-
-    # Note: interval_df now contains up to 365 days of history for this city
-    return {'ok': True, 'predictions': preds, 'history': interval_df.to_dict(orient='records')}
-
-# ------------------------------
-# Frame processing
-# ------------------------------
-
-# ------------------------------
-# Improved producer/consumer for each stream
-# ------------------------------
-
-# configuration tuning
-CAPTURE_WIDTH = 640 # smaller -> much faster inference
-CAPTURE_HEIGHT = 360
-PROCESS_FPS = 5 # target inference frames per second per stream
-QUEUE_MAXSIZE = 3 # keep very small to avoid backlog
-PRED_INTERVAL_SECONDS = 10 # keep your 30s averaging save
 
 def start_capture_thread(stream_url: str, frame_queue: Queue, stop_event):
-    """
-    Capture thread: reads frames from the stream and pushes into the queue.
-    Drops oldest frame when queue is full (so processing consumes the newest frames).
-    """
-    cap = cv2.VideoCapture(stream_url)
-    # Try to reduce internal buffer
+    """Captures frames from the stream and handles reconnection attempts."""
+    
+    # 🌟 CHANGE 1: Force FFmpeg backend for initial stream opening
+    cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG) 
+    
     try:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     except Exception:
@@ -272,20 +336,30 @@ def start_capture_thread(stream_url: str, frame_queue: Queue, stop_event):
 
     while not stop_event.is_set():
         ret, frame = cap.read()
+        
         if not ret:
-            # stream temporarily failed — small sleep and retry
-            time.sleep(0.5)
-            continue
+            # Reconnection Logic (Fix for stuck video)
+            print("Capture failed. Re-opening stream...")
+            cap.release()
+            time.sleep(1.0) # Wait a moment before retrying the connection
+            
+            # 🌟 CHANGE 2: Force FFmpeg backend for re-initialization
+            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG) 
+            
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+            continue # Skip the rest of the loop and try reading a frame again
 
-        # Resize once here for speed (smaller)
-        frame = cv2.resize(frame, (CAPTURE_WIDTH, CAPTURE_HEIGHT))
+        frame = cv2.resize(frame, (config.CAPTURE_WIDTH, config.CAPTURE_HEIGHT))
 
-        # Non-blocking put; if full, drop oldest and put newest
         try:
             frame_queue.put_nowait(frame)
         except:
+            # Aggressively discard old frame if queue is full to ensure low latency
             try:
-                _ = frame_queue.get_nowait() # drop oldest
+                _ = frame_queue.get_nowait()
             except Empty:
                 pass
             try:
@@ -295,24 +369,14 @@ def start_capture_thread(stream_url: str, frame_queue: Queue, stop_event):
 
     cap.release()
 
-
-def start_processing_thread(video_index: int, frame_queue: Queue, out_frame_queue: Queue, stop_event):
-    """
-    Processing thread: runs YOLO on frames from frame_queue at limited FPS,
-    draws boxes, saves counts every PRED_INTERVAL_SECONDS.
-    Puts final JPEG bytes into out_frame_queue used by the HTTP response generator.
-    """
+def start_processing_thread(video_index: int, frame_queue: Queue, out_frame_queue: Queue, data_queue: Queue, stop_event):
     tracker = Tracker()
-    global model_yolo, last_reset_time
-    last_save = time.time()
-    vehicle_buffer = []
-
-    # load class list once
+    global predicted_output
+    
     with open("yolov8/coco.txt", "r") as my_file:
         class_list = my_file.read().split("\n")
 
-    # compute wait between processing frames to cap FPS
-    wait_between = 1.0 / PROCESS_FPS
+    wait_between = 1.0 / config.PROCESS_FPS
 
     while not stop_event.is_set():
         start = time.time()
@@ -321,9 +385,9 @@ def start_processing_thread(video_index: int, frame_queue: Queue, out_frame_queu
         except Empty:
             continue
 
-        # run inference (small image size, low verbosity)
-        # use model.predict with imgsz to keep consistent speed
-        results = model_yolo.predict(frame, imgsz=640, conf=0.35, verbose=False)
+        # run inference
+        # 🎯 Aggressively reduced YOLO resolution to imgsz=320 for MAX speed
+        results = config.model_yolo.predict(frame, imgsz=320, conf=0.35, verbose=False) 
         detections = results[0].boxes.data
         px = pd.DataFrame(detections).astype("float") if detections is not None else pd.DataFrame()
 
@@ -359,92 +423,103 @@ def start_processing_thread(video_index: int, frame_queue: Queue, out_frame_queu
         truck_count = len(trucks_boxes)
         total_count = car_count + bus_count + truck_count
 
-        vehicle_buffer.append([car_count, bus_count, truck_count, total_count])
-
-        # periodic save average
-        now = time.time()
-        if now - last_save >= PRED_INTERVAL_SECONDS:
-            avg = np.mean(vehicle_buffer, axis=0) if vehicle_buffer else [0, 0, 0, 0]
-            vehicle_buffer = []
-            last_save = now
-            save_counts_row(ts=now, video_index=video_index,
-                            car=int(round(avg[0])), bus=int(round(avg[1])),
-                            truck=int(round(avg[2])), total=int(round(avg[3])))
+        # Non-blocking data push to the data saving thread (This logic is correct)
+        try:
+            data_queue.put_nowait([car_count, bus_count, truck_count, total_count])
+        except:
+            pass 
 
         cvzone.putTextRect(draw_frame,
                             f'Car: {car_count}, Bus: {bus_count}, Truck: {truck_count}, Total: {total_count}',
-                            (10, CAPTURE_HEIGHT - 10), 1, 1)
+                            (10, config.CAPTURE_HEIGHT - 10), 1, 1)
 
-        # encode and put into out queue (drop if out queue full)
+       # encode and put into out queue
         ret, buffer = cv2.imencode('.jpg', draw_frame)
         if ret:
             frame_bytes = buffer.tobytes()
+            
+            # Aggressive Non-Blocking Output Logic (Flush queue before putting)
+            try:
+                # Clear all old frames to make sure the newest frame is displayed immediately
+                while True:
+                    out_frame_queue.get_nowait()
+            except Empty:
+                pass
+            
             try:
                 out_frame_queue.put_nowait(frame_bytes)
             except:
-                try:
-                    _ = out_frame_queue.get_nowait() # drop oldest
-                except Empty:
-                    pass
-                try:
-                    out_frame_queue.put_nowait(frame_bytes)
-                except:
-                    pass
+                # Should only fail if something major is wrong
+                pass
 
         # enforce processing fps cap
         elapsed = time.time() - start
         if elapsed < wait_between:
             time.sleep(wait_between - elapsed)
 
+def start_data_saving_thread(video_index: int, data_queue: Queue, stop_event):
+    """Saves averaged vehicle counts to CSV on a fixed interval (non-blocking to video)."""
+    last_save = time.time()
+    
+    while not stop_event.is_set():
+        time.sleep(0.5) # Check every half-second
+        
+        all_counts = []
+        try:
+            while True:
+                all_counts.append(data_queue.get_nowait()) 
+        except Empty:
+            pass
+            
+        now = time.time()
+        
+        if now - last_save >= config.PRED_INTERVAL_SECONDS and all_counts:
+            avg = np.mean(all_counts, axis=0)
+            
+            data_analysis.save_counts_row(
+                ts=now, video_index=video_index,
+                car=int(round(avg[0])), bus=int(round(avg[1])),
+                truck=int(round(avg[2])), total=int(round(avg[3]))
+            )
+            last_save = now
 
 def generate_frames_from_queue(out_frame_queue: Queue, stop_event):
-    """
-    HTTP generator: yields latest JPEG bytes from out_frame_queue.
-    Always yields the newest available frame (drops older ones).
-    """
+    """Generator function to stream JPEG frames from the output queue to the web browser."""
     while not stop_event.is_set():
         try:
             frame_bytes = out_frame_queue.get(timeout=1.0)
         except Empty:
             continue
         yield (b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-
-# ------------------------------
-# Updated route implementation to wire queues per video_index
-# ------------------------------
-
-# We'll keep global maps per index
-capture_queues = {}
-process_out_queues = {}
-stream_threads = {}
-stop_events = {}
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
 def ensure_stream_started(video_index: int):
-    """
-    Ensure background threads (capture + processing) are started for this video_index.
-    """
+    # Uses config constants
     if video_index in stream_threads:
         return
 
-    # get the actual playable stream URL once
-    url = get_livestream_url(youtube_urls[video_index])
+    url = get_livestream_url(config.youtube_urls[video_index])
 
-    frame_q = Queue(maxsize=QUEUE_MAXSIZE)
-    out_q = Queue(maxsize=1) # only need latest for HTTP feed
+    frame_q = Queue(maxsize=config.QUEUE_MAXSIZE)
+    # FIX: Output queue remains 10 for smoothness
+    out_q = Queue(maxsize=10) 
+    # FIX 1: New queue for non-blocking data (Increased size)
+    data_q = Queue(maxsize=500) 
+    
     stop_ev = threading.Event()
 
     t_cap = threading.Thread(target=start_capture_thread, args=(url, frame_q, stop_ev), daemon=True)
-    t_proc = threading.Thread(target=start_processing_thread, args=(video_index, frame_q, out_q, stop_ev), daemon=True)
+    t_proc = threading.Thread(target=start_processing_thread, args=(video_index, frame_q, out_q, data_q, stop_ev), daemon=True)
+    t_data = threading.Thread(target=start_data_saving_thread, args=(video_index, data_q, stop_ev), daemon=True)
 
     t_cap.start()
     t_proc.start()
+    t_data.start()
 
     capture_queues[video_index] = frame_q
     process_out_queues[video_index] = out_q
-    stream_threads[video_index] = (t_cap, t_proc)
+    stream_threads[video_index] = (t_cap, t_proc, t_data)
     stop_events[video_index] = stop_ev
-
 
 
 # ------------------------------
@@ -453,13 +528,23 @@ def ensure_stream_started(video_index: int):
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    global stream_url, predicted_output
-
+    global predicted_output
     video_index = request.args.get('video_index', default=0, type=int)
-    city = CITY_MAP.get(video_index, f"City_{video_index}") # ✅ get city
-    stream_url = get_livestream_url(youtube_urls[video_index])
+    # NEW: Get the comma-separated historical dates from the URL for custom prediction
+    selected_dates_str = request.args.get('historical_dates', default='', type=str)
+    
+    city = config.CITY_MAP.get(video_index, f"City_{video_index}") 
 
-    geojson_data = load_geojson()
+    # --- LOGIC FOR YOUTUBE EMBED URL ---
+    youtube_url = config.youtube_urls[video_index]
+    match = re.search(r'(?<=v=)[\w-]+|(?<=youtu\.be/)[\w-]+', youtube_url)
+    video_id = match.group(0) if match else None
+    
+    # FIX 2: Added controls=0, modestbranding=1, and disablekb=1 to suppress YouTube player controls and links
+    youtube_embed_url = f"https://www.youtube.com/embed/{video_id}?autoplay=1&mute=1&controls=0&modestbranding=1&disablekb=1" if video_id else ""
+    # ----------------------------------------
+
+    geojson_data = config.load_geojson()
     df = pd.DataFrame({'name': ['Heavy', 'High', 'Low', 'Normal'], 'value': [0, 1, 2, 3]})
 
     centers = [
@@ -470,6 +555,7 @@ def index():
     ]
     c = centers[min(max(video_index, 0), len(centers) - 1)]
 
+    # Plotly Map Setup (unchanged)
     fig = px.choropleth_mapbox(
         df,
         geojson=geojson_data,
@@ -495,45 +581,49 @@ def index():
         name=c['name'],
     ))
 
-    line_color = COLOR_MAP.get(int(predicted_output), 'gray')
+    line_color = config.COLOR_MAP.get(int(predicted_output), 'gray')
     fig.data[-1].line.color = line_color
     fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0})
 
     graph_html = fig.to_html(full_html=False)
 
-    # --------------------------------------------------------
-    # 🎯 MODIFIED: Call the "Today's Remaining" prediction function
-    # --------------------------------------------------------
-    tmr = predict_today_intervals_remaining(city) 
-    tmr_preds = tmr.get('predictions') if tmr.get('ok') else []
+    # Call the 24-hour prediction function
+    # MODIFIED: Pass the selected_dates_str to the prediction function
+    predictions_24h = data_analysis.predict_next_24_hours(
+        city, 
+        selected_dates_str=selected_dates_str
+    ) 
+    preds = predictions_24h.get('predictions') if predictions_24h.get('ok') else []
 
-    # Keeping variable names 'tomorrow_total'/'tomorrow_level' for minimal HTML change
-    if tmr_preds:
-        tomorrow_total = sum(p['predicted_total'] for p in tmr_preds)
-        if tomorrow_total < 500:
-            tomorrow_level = "Low"
-        elif tomorrow_total < 1500:
-            tomorrow_level = "Medium"
-        elif tomorrow_total < 3000:
-            tomorrow_level = "High"
+    # Calculate total and level based on the full 24-hour prediction
+    if preds:
+        total_24h = sum(p['predicted_total'] for p in preds)
+        
+        # Adjusting thresholds for a full 24-hour total
+        if total_24h < 5000:
+            total_level = "Low"
+        elif total_24h < 15000:
+            total_level = "Medium"
+        elif total_24h < 30000:
+            total_level = "High"
         else:
-            tomorrow_level = "Heavy"
+            total_level = "Heavy"
     else:
-        tomorrow_total = None
-        tomorrow_level = None
+        total_24h = None
+        total_level = None
 
     return render_template(
         'index.html',
         graph_html=graph_html,
         video_index=video_index,
-        tomorrow_preds=tmr_preds,
-        tomorrow_total=tomorrow_total,
-        tomorrow_level=tomorrow_level,
-        city=city # ✅ pass city to template
+        youtube_embed_url=youtube_embed_url, 
+        hourly_preds=preds, 
+        total_24h=total_24h, 
+        total_level=total_level,
+        city=city,
+        selected_dates_str=selected_dates_str # NEW: Pass back for form persistence
     )
 
-
-# Replace /video_feed route's generator use:
 @app.route('/video_feed')
 def video_feed():
     video_index = request.args.get('video_index', default=0, type=int)
@@ -542,37 +632,303 @@ def video_feed():
     if out_q is None:
         return "Stream not available", 503
 
-    # The Response will use the generator that yields bytes from the out queue
     return Response(generate_frames_from_queue(out_q, stop_events[video_index]),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
+                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
-# --------------------------------------------------------
-# 🎯 MODIFIED: /predict_tomorrow route now calls the 'Today' function
-# --------------------------------------------------------
 @app.route('/predict_tomorrow')
 def predict_tomorrow_api():
     video_index = request.args.get("video_index", default=0, type=int)
-    city = CITY_MAP.get(video_index, f"City_{video_index}") # ✅ filter by city
-    out = predict_today_intervals_remaining(city)
+    city = config.CITY_MAP.get(video_index, f"City_{video_index}")
+    # Note: This API uses the default prediction logic (all available data)
+    out = data_analysis.predict_next_24_hours(city) 
     return jsonify(out)
 
 @app.route('/data.csv')
 def download_csv():
-    _ensure_counts_csv()
+    data_analysis._ensure_counts_csv()
     return send_file(
-        CSV_FILE,
+        config.CSV_FILE,
         as_attachment=True,
         download_name="traffic_counts.csv",
         mimetype='text/csv'
     )
 
 # ------------------------------
-# Replace your __main__ startup with a minimal server-only start:
+# App Startup
 # ------------------------------
 if __name__ == '__main__':
-    # do NOT start process_stream for each stream here anymore
-    # Flask will lazily start capture+process threads per requested video_index in ensure_stream_started
-    for video_index in CITY_MAP.keys():
+    # Start all streams on startup
+    for video_index in config.CITY_MAP.keys():
         ensure_stream_started(video_index)
     app.run(debug=True, threaded=True)
+
+
+
+
+
+
+
+# data_analysis.py
+
+import pandas as pd
+import os
+import time
+import numpy as np
+from datetime import datetime, timedelta 
+from sklearn.linear_model import LinearRegression
+import pytz 
+
+# Import constants from config.py
+from config import CSV_FILE, CITY_MAP, PRED_INTERVAL_SECONDS, CITY_TIMEZONES 
+
+def _ensure_counts_csv():
+    """Ensures the CSV file exists with the correct header."""
+    if not os.path.exists(CSV_FILE):
+        pd.DataFrame(
+            columns=['timestamp', 'city', 'video_index', 'car', 'bus', 'truck', 'total']
+        ).to_csv(CSV_FILE, index=False)
+
+def save_counts_row(ts: float, video_index: int, car: int, bus: int, truck: int, total: int) -> None:
+    """Appends a new count row to the CSV file."""
+    _ensure_counts_csv()
+    city = CITY_MAP.get(video_index, f"City_{video_index}")
+    row = pd.DataFrame([{
+        'timestamp': int(ts),
+        'city': city,
+        'video_index': int(video_index),
+        'car': int(car),
+        'bus': int(bus),
+        'truck': int(truck),
+        'total': int(total),
+    }])
+    row.to_csv(CSV_FILE, mode='a', header=False, index=False)
+
+def read_last_samples(city: str, now_utc: float | None = None) -> pd.DataFrame:
+    """Reads historical samples, prioritizing the last 7 days, then falling back to 365 days."""
+    _ensure_counts_csv()
+    df = pd.read_csv(CSV_FILE)
+    if df.empty:
+        return pd.DataFrame(columns=['timestamp', 'city', 'total'])
+
+    df = df[df['city'] == city] 
+    if df.empty:
+        return pd.DataFrame(columns=['timestamp', 'city', 'total'])
+
+    if now_utc is None:
+        now_utc = time.time()
+        
+    df['timestamp'] = pd.to_numeric(df['timestamp'], errors='coerce')
+    df = df.dropna(subset=['timestamp'])
+    
+    recent_limit = now_utc - 7 * 86400  
+    fallback_limit = now_utc - 365 * 86400 
+
+    recent_df = df[df['timestamp'] >= recent_limit]
+    
+    if not recent_df.empty:
+        return recent_df.reset_index(drop=True)
+    
+    fallback_df = df[df['timestamp'] >= fallback_limit]
+    
+    return fallback_df.reset_index(drop=True)
+
+def last_week_interval_totals(city: str, now_utc: float | None = None) -> pd.DataFrame:
+    """Aggregates traffic totals into 1-hour intervals for historical analysis."""
+    samples = read_last_samples(city, now_utc)
+    if samples.empty:
+        return pd.DataFrame(columns=['date', 'interval', 'interval_total'])
+    # Get the correct timezone object for the city
+    tz = CITY_TIMEZONES.get(city)
+    if tz is None:
+        tz = pytz.utc # Fallback just in case
+        
+    # 1. Convert timestamp to UTC-aware datetime objects
+    samples['dt'] = pd.to_datetime(samples['timestamp'], unit='s', utc=True)
+    
+    # 2. Convert UTC to the City's local timezone
+    samples['dt'] = samples['dt'].dt.tz_convert(tz)
+    
+    samples['date'] = samples['dt'].dt.date
+    samples['hour'] = samples['dt'].dt.hour
+    
+    # Groups by 1-hour interval (hour 0 to 23)
+    samples['interval'] = samples['hour'] 
+    
+    samples['dt'] = pd.to_datetime(samples['timestamp'], unit='s')
+    samples['date'] = samples['dt'].dt.date
+    samples['hour'] = samples['dt'].dt.hour
+    
+    # Groups by 1-hour interval (hour 0 to 23)
+    samples['interval'] = samples['hour'] 
+    
+    interval_df = (
+        samples.groupby(['date', 'interval'], as_index=False)['total']
+        .sum()
+        .rename(columns={'total': 'interval_total'})
+    )
+    return interval_df.sort_values(['date', 'interval']).reset_index(drop=True)
+
+
+# MODIFIED: Added selected_dates_str parameter
+def predict_next_24_hours(city: str, now_utc: float | None = None, selected_dates_str: str = '') -> dict:
+    """
+    Predicts traffic totals for the next 24 1-hour intervals, 
+    using all historical data or a specific set of historical dates if provided.
+    """
+    if now_utc is None:
+        now_utc = time.time()
+        
+    tz = CITY_TIMEZONES.get(city)
+    if tz is None:
+        tz = pytz.utc # Fallback
+        
+    utc_datetime = datetime.fromtimestamp(now_utc, pytz.utc)
+    current_datetime = utc_datetime.astimezone(tz)
+    
+    current_hour = current_datetime.hour
+    
+    # Load all historical data
+    interval_df = last_week_interval_totals(city, now_utc)
+
+    # NEW LOGIC: Filter data based on selected historical dates
+    if selected_dates_str:
+        try:
+            # Parse the comma-separated dates (e.g., '2025-10-02, 2025-10-05')
+            selected_dates = [datetime.strptime(d.strip(), '%Y-%m-%d').date() for d in selected_dates_str.split(',') if d.strip()]
+            
+            if selected_dates:
+                # Filter interval_df to include only the selected dates
+                interval_df = interval_df[interval_df['date'].isin(selected_dates)]
+                
+                if interval_df.empty:
+                    # Return error if no data matches the selected dates
+                    return {'ok': False, 'predictions': [], 'error': 'No data found for the selected dates.'}
+            
+        except ValueError as e:
+            print(f"Date parsing error: {e}. Falling back to all available data.")
+            # If parsing fails, fall back to using all available data (interval_df remains unfiltered)
+            pass 
+            
+    preds = []
+    
+    # Loop 24 times for the next 24 hours
+    for i in range(24):
+        # Calculate the hour (0-23) being predicted
+        hour_to_predict = (current_hour + i) % 24
+        
+        # history for THIS specific hour-of-day across the (potentially filtered) historical data
+        hist = (
+            interval_df[interval_df['interval'] == hour_to_predict]
+            .sort_values('date')
+        )
+
+        if hist.empty:
+            y_next = 0.0 # No data for this time-of-day (after filtering)
+        else:
+            y = hist['interval_total'].to_numpy(dtype=float)
+            n = len(y)
+
+            # Use a simple trend or average based on sample count
+            if n >= 3:
+                X = np.arange(n).reshape(-1, 1)
+                lr = LinearRegression().fit(X, y)
+                # Predict the next value (index n) in the trend
+                y_next = float(lr.predict([[n]])[0]) 
+            else:
+                # With 1–2 samples, just average THIS interval’s values
+                y_next = float(np.mean(y))
+        
+        end_hour = (hour_to_predict + 1) % 24
+        prediction_dt = current_datetime + timedelta(hours=i)
+        
+        preds.append({
+            'interval': f"{hour_to_predict:02d}:00-{end_hour:02d}:00",
+            'predicted_total': int(round(max(0, y_next))),
+            'date': prediction_dt.strftime('%b %d'),
+            'day_of_week': prediction_dt.strftime('%a')
+        })
+
+    return {'ok': True, 'predictions': preds, 'history': interval_df.to_dict(orient='records')}
+
+
+
+
+# config.py
+
+import os
+import joblib
+from ultralytics import YOLO
+import pytz # ADDED: Required for timezones
+
+# ------------------------------
+# File paths & constants
+# ------------------------------
+DATA_DIR = 'data'
+CSV_FILE = os.path.join(DATA_DIR, "traffic_counts.csv")
+GEOJSON_PATH = os.path.join(DATA_DIR, 'map.geojson')
+MODEL_PATH = 'model.joblib' 
+cookies_file = "C:/Users/Lenovo/OneDrive/Desktop/yolo model/cookies.txt"
+
+# Ensure data directory exists
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# City mapping for each video index
+CITY_MAP = {
+    0: "Tokyo",
+    1: "Colorado",
+    2: "New York",
+    3: "Roswell"
+}
+
+# ADDED: Timezone mapping for local time conversion
+CITY_TIMEZONES = {
+    "Tokyo": pytz.timezone("Asia/Tokyo"),
+    # Colorado (Mountain Time - MST/MDT)
+    "Colorado": pytz.timezone("America/Denver"),
+    # New York (Eastern Time - EST/EDT)
+    "New York": pytz.timezone("America/New_York"),
+    # Roswell, NM (Mountain Time - MST/MDT)
+    "Roswell": pytz.timezone("America/Denver")
+}
+
+
+youtube_urls = [
+    "https://www.youtube.com/watch?v=6dp-bvQ7RWo", # Tokyo
+    "https://www.youtube.com/watch?v=B0YjuKbVZ5w", # Colorado
+    "https://www.youtube.com/watch?v=rnXIjl_Rzy4", # New York
+    "https://www.youtube.com/watch?v=__S1lZ6t1qg", # Roswell
+]
+
+# ------------------------------
+# Models
+# ------------------------------
+model_yolo = YOLO('yolov8/yolov8s.pt')
+
+# Try load user's pre-trained classifier
+model_predict = None
+try:
+    if os.path.exists("traffic_model.pkl"):
+        model_predict = joblib.load("traffic_model.pkl")
+except Exception:
+    print("Warning: Could not load traffic_model.pkl")
+    model_predict = None
+
+# ------------------------------
+# Streaming Configuration
+# ------------------------------
+CAPTURE_WIDTH = 640
+CAPTURE_HEIGHT = 360
+PROCESS_FPS = 2
+QUEUE_MAXSIZE = 3
+PRED_INTERVAL_SECONDS = 10
+
+# Color/label mapping
+COLOR_MAP = {0: 'red', 1: 'green', 2: 'blue', 3: 'yellow'}
+
+
+def load_geojson(path=GEOJSON_PATH):
+    """Helper to load GeoJSON data."""
+    import json
+    with open(path) as f:
+        return json.load(f)

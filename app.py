@@ -1,5 +1,3 @@
-# app.py
-
 from flask import Flask, render_template, request, Response, jsonify, send_file
 import plotly.express as px
 import plotly.graph_objects as go
@@ -12,12 +10,26 @@ import threading
 from queue import Queue, Empty
 import yt_dlp
 import os
-import re # Added for robust URL parsing
+import re 
 
 # Import modules
 import config 
 import data_analysis
 from yolov8.tracker import Tracker # assuming tracker is available
+
+# NEW IMPORTS FOR ALERT SYSTEM
+import user_management
+import alert_system
+
+# ------------------------------
+# Global State for Alert Monitoring (Crucial for the fix)
+# ------------------------------
+# Initialize the variable here, outside any function.
+alert_monitor_thread = None 
+alert_monitor_stop_event = threading.Event()
+
+# Global State for the current map color (used by the main route)
+predicted_output = 0 
 
 # ------------------------------
 # Flask App Setup
@@ -32,7 +44,7 @@ capture_queues = {}
 process_out_queues = {}
 stream_threads = {}
 stop_events = {}
-predicted_output = 0 # current prediction level for map color
+
 
 # ------------------------------
 # Helpers
@@ -61,7 +73,9 @@ def get_livestream_url(youtube_url: str) -> str:
 
 def start_capture_thread(stream_url: str, frame_queue: Queue, stop_event):
     """Captures frames from the stream and handles reconnection attempts."""
-    cap = cv2.VideoCapture(stream_url)
+    
+    cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG) 
+    
     try:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     except Exception:
@@ -74,22 +88,21 @@ def start_capture_thread(stream_url: str, frame_queue: Queue, stop_event):
             # Reconnection Logic (Fix for stuck video)
             print("Capture failed. Re-opening stream...")
             cap.release()
-            time.sleep(1.0) # Wait a moment before retrying the connection
+            time.sleep(1.0) 
             
-            # Re-initialize the video capture object
-            cap = cv2.VideoCapture(stream_url) 
+            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG) 
+            
             try:
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             except Exception:
                 pass
-            continue # Skip the rest of the loop and try reading a frame again
+            continue 
 
         frame = cv2.resize(frame, (config.CAPTURE_WIDTH, config.CAPTURE_HEIGHT))
 
         try:
             frame_queue.put_nowait(frame)
         except:
-            # Aggressively discard old frame if queue is full to ensure low latency
             try:
                 _ = frame_queue.get_nowait()
             except Empty:
@@ -102,8 +115,6 @@ def start_capture_thread(stream_url: str, frame_queue: Queue, stop_event):
     cap.release()
 
 def start_processing_thread(video_index: int, frame_queue: Queue, out_frame_queue: Queue, data_queue: Queue, stop_event):
-    # Call data_analysis.save_counts_row
-    # Use config constants (model_yolo, PRED_INTERVAL_SECONDS, etc.)
     tracker = Tracker()
     global predicted_output
     
@@ -120,7 +131,6 @@ def start_processing_thread(video_index: int, frame_queue: Queue, out_frame_queu
             continue
 
         # run inference
-        # 🎯 FIX 2: Aggressively reduced YOLO resolution to imgsz=320 for MAX speed
         results = config.model_yolo.predict(frame, imgsz=320, conf=0.35, verbose=False) 
         detections = results[0].boxes.data
         px = pd.DataFrame(detections).astype("float") if detections is not None else pd.DataFrame()
@@ -157,24 +167,22 @@ def start_processing_thread(video_index: int, frame_queue: Queue, out_frame_queu
         truck_count = len(trucks_boxes)
         total_count = car_count + bus_count + truck_count
 
-        # Non-blocking data push to the data saving thread (This logic is correct)
+        # Non-blocking data push
         try:
             data_queue.put_nowait([car_count, bus_count, truck_count, total_count])
         except:
             pass 
 
         cvzone.putTextRect(draw_frame,
-                            f'Car: {car_count}, Bus: {bus_count}, Truck: {truck_count}, Total: {total_count}',
-                            (10, config.CAPTURE_HEIGHT - 10), 1, 1)
+                             f'Car: {car_count}, Bus: {bus_count}, Truck: {truck_count}, Total: {total_count}',
+                             (10, config.CAPTURE_HEIGHT - 10), 1, 1)
 
-       # encode and put into out queue
+        # encode and put into out queue
         ret, buffer = cv2.imencode('.jpg', draw_frame)
         if ret:
             frame_bytes = buffer.tobytes()
             
-            # 🎯 FIX 3: Aggressive Non-Blocking Output Logic (Flush queue before putting)
             try:
-                # Clear all old frames to make sure the newest frame is displayed immediately
                 while True:
                     out_frame_queue.get_nowait()
             except Empty:
@@ -183,7 +191,6 @@ def start_processing_thread(video_index: int, frame_queue: Queue, out_frame_queu
             try:
                 out_frame_queue.put_nowait(frame_bytes)
             except:
-                # Should only fail if something major is wrong
                 pass
 
         # enforce processing fps cap
@@ -196,7 +203,7 @@ def start_data_saving_thread(video_index: int, data_queue: Queue, stop_event):
     last_save = time.time()
     
     while not stop_event.is_set():
-        time.sleep(0.5) # Check every half-second
+        time.sleep(0.5) 
         
         all_counts = []
         try:
@@ -216,6 +223,14 @@ def start_data_saving_thread(video_index: int, data_queue: Queue, stop_event):
                 truck=int(round(avg[2])), total=int(round(avg[3]))
             )
             last_save = now
+            
+            # 🟢 CRUCIAL FIX: Trigger prediction and alert check here
+            # Prediction logic should be called after new data is saved
+            city = config.CITY_MAP.get(video_index)
+            if city:
+                data_analysis.predict_next_24_hours(city) 
+            
+            
 
 def generate_frames_from_queue(out_frame_queue: Queue, stop_event):
     """Generator function to stream JPEG frames from the output queue to the web browser."""
@@ -225,24 +240,17 @@ def generate_frames_from_queue(out_frame_queue: Queue, stop_event):
         except Empty:
             continue
         yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-
-# app.py
+                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
 def ensure_stream_started(video_index: int):
-    # Uses config constants
     if video_index in stream_threads:
         return
 
     url = get_livestream_url(config.youtube_urls[video_index])
 
     frame_q = Queue(maxsize=config.QUEUE_MAXSIZE)
-    # FIX: Output queue remains 10 for smoothness
     out_q = Queue(maxsize=10) 
-    # 🎯 FIX 1: New queue for non-blocking data (Increased size)
     data_q = Queue(maxsize=500) 
-    
-    # ... (rest of the function remains the same) ...
     
     stop_ev = threading.Event()
 
@@ -268,16 +276,16 @@ def ensure_stream_started(video_index: int):
 def index():
     global predicted_output
     video_index = request.args.get('video_index', default=0, type=int)
+    selected_dates_str = request.args.get('historical_dates', default='', type=str)
+    
     city = config.CITY_MAP.get(video_index, f"City_{video_index}") 
 
-    # --- NEW LOGIC FOR YOUTUBE EMBED URL ---
+    # --- LOGIC FOR YOUTUBE EMBED URL ---
     youtube_url = config.youtube_urls[video_index]
-    # Use regex to find the video ID for robust extraction
     match = re.search(r'(?<=v=)[\w-]+|(?<=youtu\.be/)[\w-]+', youtube_url)
     video_id = match.group(0) if match else None
-    # app.py -> index() function
-
-    youtube_embed_url = f"https://www.youtube.com/embed/{video_id}?autoplay=1&mute=1" if video_id else ""
+    
+    youtube_embed_url = f"https://www.youtube.com/embed/{video_id}?autoplay=1&mute=1&controls=0&modestbranding=1&disablekb=1" if video_id else ""
     # ----------------------------------------
 
     geojson_data = config.load_geojson()
@@ -323,36 +331,44 @@ def index():
 
     graph_html = fig.to_html(full_html=False)
 
-    # Call the 24-hour prediction function
-    predictions_24h = data_analysis.predict_next_24_hours(city) 
+    # Call the 24-hour prediction function (this also updates the LATEST_PREDICTIONS state via data_analysis.py)
+    predictions_24h = data_analysis.predict_next_24_hours(
+        city, 
+        selected_dates_str=selected_dates_str
+    ) 
+    
     preds = predictions_24h.get('predictions') if predictions_24h.get('ok') else []
 
-    # Calculate total and level based on the full 24-hour prediction
-    if preds:
-        total_24h = sum(p['predicted_total'] for p in preds)
-        
-        # Adjusting thresholds for a full 24-hour total
-        if total_24h < 5000:
-            total_level = "Low"
-        elif total_24h < 15000:
-            total_level = "Medium"
-        elif total_24h < 30000:
-            total_level = "High"
-        else:
-            total_level = "Heavy"
-    else:
-        total_24h = None
-        total_level = None
+    # Get the latest state saved by the data_analysis thread for display
+    current_state = user_management.LATEST_PREDICTIONS.get(city, {})
+    
+    total_24h = current_state.get('total', None)
+    total_level = current_state.get('level', None)
+    
+    # ----------------------------------------------------------------------
+    # ❌ REMOVED: Redundant update, as data_analysis.predict_next_24_hours handles this now.
+    # if preds:
+    #     total_24h = sum(p['predicted_total'] for p in preds)
+    #     total_level = data_analysis.get_traffic_level(total_24h)
+    #     user_management.LATEST_PREDICTIONS[city] = {
+    #         'level': total_level,
+    #         'total': total_24h
+    #     }
+    # else:
+    #     total_24h = None
+    #     total_level = None
+    # ----------------------------------------------------------------------
 
     return render_template(
         'index.html',
         graph_html=graph_html,
         video_index=video_index,
-        youtube_embed_url=youtube_embed_url, # NEW: Pass the embed URL
+        youtube_embed_url=youtube_embed_url, 
         hourly_preds=preds, 
         total_24h=total_24h, 
         total_level=total_level,
-        city=city
+        city=city,
+        selected_dates_str=selected_dates_str
     )
 
 @app.route('/video_feed')
@@ -371,7 +387,9 @@ def video_feed():
 def predict_tomorrow_api():
     video_index = request.args.get("video_index", default=0, type=int)
     city = config.CITY_MAP.get(video_index, f"City_{video_index}")
-    out = data_analysis.predict_next_24_hours(city)
+    
+    # Calling predict_next_24_hours here also saves the state and triggers the alert check
+    out = data_analysis.predict_next_24_hours(city) 
     return jsonify(out)
 
 @app.route('/data.csv')
@@ -383,6 +401,36 @@ def download_csv():
         download_name="traffic_counts.csv",
         mimetype='text/csv'
     )
+    
+# ------------------------------
+# NEW ROUTE: GPS LOCATION SIMULATION
+# ------------------------------
+@app.route('/move_user', methods=['POST'])
+def move_user():
+    """API to simulate a user moving to a new GPS location."""
+    data = request.json
+    user_id = data.get('user_id')
+    lat = data.get('lat')
+    lon = data.get('lon')
+
+    try:
+        user_id = int(user_id)
+        lat = float(lat)
+        lon = float(lon)
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "Invalid user_id or coordinates type"}), 400
+
+    if user_id in user_management.USER_LOCATIONS:
+        user_management.USER_LOCATIONS[user_id]['lat'] = lat
+        user_management.USER_LOCATIONS[user_id]['lon'] = lon
+        
+        # Immediately check for alerts for instant user feedback
+        alert_system.check_and_send_alerts() 
+
+        user_name = config.DUMMY_USERS.get(user_id, {}).get('name', 'Unknown')
+        return jsonify({"ok": True, "message": f"User {user_id} ({user_name}) simulated move to ({lat}, {lon})"}), 200
+    
+    return jsonify({"ok": False, "error": f"User ID {user_id} not found in dummy list"}), 404
 
 # ------------------------------
 # App Startup
@@ -391,4 +439,15 @@ if __name__ == '__main__':
     # Start all streams on startup
     for video_index in config.CITY_MAP.keys():
         ensure_stream_started(video_index)
+        
+    # --- Start the real-time alert monitoring thread ---
+    print("=== Real-Time Alert Monitoring Started (Checking every 10s) ===")
+    alert_monitor_thread = threading.Thread(
+        target=alert_system.start_alert_monitoring,
+        args=(alert_monitor_stop_event,),
+        daemon=True
+    )
+    alert_monitor_thread.start()
+    # ----------------------------------------------------------
+    
     app.run(debug=True, threaded=True)
