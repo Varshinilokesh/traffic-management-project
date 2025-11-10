@@ -82,25 +82,47 @@ def load_geojson(path=GEOJSON_PATH):
         return json.load(f)
     
 # 🟢 ACTION REQUIRED: REPLACE THIS with your actual Bot Token!
-TELEGRAM_BOT_TOKEN = "8329599182:AAH17nkqLAcwoybfGQu7je9ru3C0ryzNyMU"  
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+# INSERT THIS CODE BLOCK:
+TELEGRAM_BASE_URL = "https://api.telegram.org/bot{}/sendMessage"
 
+# This dictionary is required by alert_system.py. Keys must match CITY_MAP.
+BOT_CREDENTIALS: Dict[str, Dict[str, str]] = {
+    "Tokyo": {
+        "token": "8583165278:AAGGJdPiSWLTsnpphhNfyqUBZdV-AcImvro", 
+        "name": "Tokyo Traffic Bot"
+    },
+    "Colorado": {
+        "token": "8429226980:AAHORCHHkyqWb81inmrQPtE_M3enhHlsPmQ", 
+        "name": "Colorado Traffic Bot"
+    },
+    "New York": {
+        "token": "8282242272:AAGPqvjG_KN8Id9KNIuKGSAnfi3x-fb62_k", 
+        "name": "Newyork Traffic Bot"
+    },
+    "Roswell": {
+        "token": "8285946482:AAGnvFwJBEXdtWmxrRdMY78OnBA97CjBK1g", 
+        "name": "Roswell Traffic Bot"
+    },
+}
+
+
+PUBLIC_ALERT_CHANNEL_ID = "-1003398559988"
 # ------------------------------
 # Dummy Users (Update mobile_id to use Telegram Chat IDs)
 # ------------------------------
 # NOTE: These User IDs must match the keys in user_management.py USER_LOCATIONS
 DUMMY_USERS = {
     # 1. Your ID is already here and correct
-    101: {'name': 'Project Lead', 'mobile_id': '5835037205', 'city': 'Tokyo', 'alert_level': 'Heavy'},
+    101: {'name': 'user A', 'mobile_id': '5835037205', 'city': 'Tokyo', 'alert_level': 'High'},
     
     # 2. FIX: Replace 'FRIEND_A_CHAT_ID' with your ID for testing
-    102: {'name': 'Friend A', 'mobile_id': '5835037205', 'city': 'Colorado', 'alert_level': 'High'}, 
+    102: {'name': 'user B', 'mobile_id': '8374641200', 'city': 'Colorado', 'alert_level': 'low'}, 
     
     # 3. FIX: Replace 'FRIEND_B_CHAT_ID' with your ID for testing (this is the one failing in your log!)
-    103: {'name': 'Friend B', 'mobile_id': '5835037205', 'city': 'New York', 'alert_level': 'Medium'},
+    103: {'name': 'user C', 'mobile_id': '8513429930', 'city': 'New York', 'alert_level': 'Medium'},
     
     # 4. Your ID is already here and correct
-    104: {'name': 'Project Lead (Roswell)', 'mobile_id': '5835037205', 'city': 'Roswell', 'alert_level': 'High'},
+    104: {'name': 'user D', 'mobile_id': '1262829023', 'city': 'Roswell', 'alert_level': 'low'},
 }
 
 # ------------------------------

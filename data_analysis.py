@@ -22,9 +22,9 @@ def get_traffic_level(total_count: int) -> str:
     Classifies the total vehicle count into a traffic level.
     The thresholds are arbitrary and should be defined based on your data/needs.
     """
-    if total_count >= 15000:
+    if total_count >= 3000:
         return 'Heavy'
-    elif total_count >= 5000:
+    elif total_count >= 2000:
         return 'High'
     elif total_count >= 1000:
         return 'Medium'
@@ -129,6 +129,14 @@ def read_last_samples(city: str, now_utc: float | None = None) -> pd.DataFrame:
 def last_week_interval_totals(city: str, now_utc: float | None = None) -> pd.DataFrame:
     """Aggregates traffic totals into 1-hour intervals for historical analysis."""
     samples = read_last_samples(city, now_utc)
+    if samples.empty:
+        return pd.DataFrame(columns=['date', 'interval', 'interval_total'])
+    
+    # 🟢 CRITICAL FILTER: Remove rows where the raw 'total' count is 0
+    # This excludes data points where traffic was zero or the camera was down.
+    samples = samples[samples['total'] > 0].reset_index(drop=True)
+    
+    # Check again after filtering, in case only zero-count data existed
     if samples.empty:
         return pd.DataFrame(columns=['date', 'interval', 'interval_total'])
         

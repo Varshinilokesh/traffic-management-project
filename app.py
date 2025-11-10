@@ -25,10 +25,11 @@ import alert_system
 # Global State for Alert Monitoring (Crucial for the fix)
 # ------------------------------
 # Initialize the variable here, outside any function.
-alert_monitor_thread = None 
+alert_monitor_thread = None
 alert_monitor_stop_event = threading.Event()
 
-# Global State for the current map color (used by the main route)
+# Global State for the current map color (USED TO BE HERE, but is now obsolete)
+# We will read directly from user_management.LATEST_PREDICTIONS
 predicted_output = 0 
 
 # ------------------------------
@@ -224,8 +225,8 @@ def start_data_saving_thread(video_index: int, data_queue: Queue, stop_event):
             )
             last_save = now
             
-            # 🟢 CRUCIAL FIX: Trigger prediction and alert check here
-            # Prediction logic should be called after new data is saved
+            # CRUCIAL: Trigger prediction after new data is saved. 
+            # This updates user_management.LATEST_PREDICTIONS which is read by app.route('/')
             city = config.CITY_MAP.get(video_index)
             if city:
                 data_analysis.predict_next_24_hours(city) 
@@ -240,7 +241,7 @@ def generate_frames_from_queue(out_frame_queue: Queue, stop_event):
         except Empty:
             continue
         yield (b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
 def ensure_stream_started(video_index: int):
     if video_index in stream_threads:
@@ -274,7 +275,8 @@ def ensure_stream_started(video_index: int):
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    global predicted_output
+    # Remove global predicted_output reliance as it's not thread-safe/reliable
+    # global predicted_output # REMOVED 
     video_index = request.args.get('video_index', default=0, type=int)
     selected_dates_str = request.args.get('historical_dates', default='', type=str)
     
@@ -324,10 +326,25 @@ def index():
         line=dict(width=4, color='blue'),
         name=c['name'],
     ))
-
-    line_color = config.COLOR_MAP.get(int(predicted_output), 'gray')
+    
+    # ----------------------------------------------------------------------
+    # 🟢 CRITICAL FIX: Read current traffic level from the thread-safe global state
+    # ----------------------------------------------------------------------
+    current_state = user_management.LATEST_PREDICTIONS.get(city, {})
+    current_level = current_state.get('level', 'Low') # Default to 'Low'
+    
+    # Map the text level to a specific color
+    color_level_map = {
+        'Low': 'blue',   
+        'Medium': 'yellow',    
+        'High': 'green',  
+        'Heavy': 'red'      
+    }
+    line_color = color_level_map.get(current_level, 'gray') # Use 'gray' if level is missing
+    
     fig.data[-1].line.color = line_color
     fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0})
+    # ----------------------------------------------------------------------
 
     graph_html = fig.to_html(full_html=False)
 
@@ -339,26 +356,15 @@ def index():
     
     preds = predictions_24h.get('predictions') if predictions_24h.get('ok') else []
 
-    # Get the latest state saved by the data_analysis thread for display
+    # Get the latest state saved by the data_analysis thread for display in HTML
     current_state = user_management.LATEST_PREDICTIONS.get(city, {})
     
     total_24h = current_state.get('total', None)
     total_level = current_state.get('level', None)
     
-    # ----------------------------------------------------------------------
-    # ❌ REMOVED: Redundant update, as data_analysis.predict_next_24_hours handles this now.
-    # if preds:
-    #     total_24h = sum(p['predicted_total'] for p in preds)
-    #     total_level = data_analysis.get_traffic_level(total_24h)
-    #     user_management.LATEST_PREDICTIONS[city] = {
-    #         'level': total_level,
-    #         'total': total_24h
-    #     }
-    # else:
-    #     total_24h = None
-    #     total_level = None
-    # ----------------------------------------------------------------------
-
+    # Note: The commented-out code block (lines 280-290 in your original submission) 
+    # was correctly identified for removal as the data is already in LATEST_PREDICTIONS.
+    
     return render_template(
         'index.html',
         graph_html=graph_html,
@@ -424,14 +430,19 @@ def move_user():
         user_management.USER_LOCATIONS[user_id]['lat'] = lat
         user_management.USER_LOCATIONS[user_id]['lon'] = lon
         
-        # Immediately check for alerts for instant user feedback
-        alert_system.check_and_send_alerts() 
+        # We rely on the periodic alert_monitoring thread to pick this up,
+        # but you could uncomment the line below for instant feedback if performance allows:
+        # alert_system.check_and_send_alerts() 
 
         user_name = config.DUMMY_USERS.get(user_id, {}).get('name', 'Unknown')
         return jsonify({"ok": True, "message": f"User {user_id} ({user_name}) simulated move to ({lat}, {lon})"}), 200
     
     return jsonify({"ok": False, "error": f"User ID {user_id} not found in dummy list"}), 404
 
+# ------------------------------
+# App Startup
+# ------------------------------
+# In app.py (REPLACE THE SECTION WITH THIS)
 # ------------------------------
 # App Startup
 # ------------------------------
@@ -449,5 +460,5 @@ if __name__ == '__main__':
     )
     alert_monitor_thread.start()
     # ----------------------------------------------------------
-    
-    app.run(debug=True, threaded=True)
+    # Setting use_reloader=False prevents the flask app from running twice
+    app.run(debug=True, threaded=True, use_reloader=False)
