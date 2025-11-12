@@ -264,9 +264,9 @@
             <div style="margin-top: 15px;">
                  <label for="historicalDates">Select Historical Dates (Comma-separated YYYY-MM-DD):</label>
                  <input type="text" id="historicalDates" name="historicalDates" 
-                         placeholder="e.g., 2025-10-02, 2025-10-05" 
-                         value="{{ selected_dates_str if selected_dates_str else '' }}"
-                         style="padding: 10px; border-radius: 8px; border: 1px solid #b0bec5; width: 300px;">
+                             placeholder="e.g., 2025-10-02, 2025-10-05" 
+                             value="{{ selected_dates_str if selected_dates_str else '' }}"
+                             style="padding: 10px; border-radius: 8px; border: 1px solid #b0bec5; width: 300px;">
                  <button onclick="submitCustomDates()" style="padding: 10px 15px; border-radius: 8px; border: none; background-color: #2980b9; color: white; cursor: pointer;">Predict Now</button>
                  <p style="font-size: 14px; color: #7f8c8d; margin-top: 5px;">*Prediction uses the traffic patterns from these specific dates.</p>
             </div>
@@ -304,44 +304,40 @@
         </div>
 
         <div class="prediction-container">
-    <h2>Predicted Traffic for Next 24 Hours ({{ city }})</h2>
-    {% if total_level and total_24h %}
-    {# Use semantic class names for levels so static linters don't choke on inline Jinja in style attributes #}
-    {% set level_class = 'level-' + (total_level|lower|string).replace(' ', '-') %}
-    <p>Overall Level: <strong class="{{ level_class }}">{{ total_level }}</strong></p>
-    <p>Expected Total Vehicles: <strong class="level-expected">{{ total_24h }}</strong></p>
-    {% else %}
-        <p class="no-data">No prediction available. Collect more historical data to see the forecast for the next 24 hours.</p>
-    {% endif %}
-</div>
+            <h2>Predicted Traffic for Next 24 Hours ({{ city }})</h2>
+            {% if total_level and total_24h %}
+            {# Use semantic class names for levels so static linters don't choke on inline Jinja in style attributes #}
+            {% set level_class = 'level-' + (total_level|lower|string).replace(' ', '-') %}
+            <p>Overall Level: <strong class="{{ level_class }}">{{ total_level }}</strong></p>
+            <p>Expected Total Vehicles: <strong class="level-expected">{{ total_24h }}</strong></p>
+            {% else %}
+                <p class="no-data">No prediction available. Collect more historical data to see the forecast for the next 24 hours.</p>
+            {% endif %}
+        </div>
     </div>
     
     <div class="simulation-panel">
         <h3>User Location Simulation</h3>
-        <p style="font-size: 12px; color: #555; margin-bottom: 15px;">Simulate a user's GPS location to test real-time alerts.</p>
+        <p style="font-size: 12px; color: #555; margin-bottom: 15px;">
+            Enter a user ID and click to automatically detect your GPS location and check for alerts.
+        </p>
         
         <label for="userId">User ID:</label>
         <input type="number" id="userId" value="101" placeholder="e.g., 101">
         
-        <label for="lat">Latitude (Lat):</label>
-        <input type="number" step="0.0001" id="lat" value="28.7041" placeholder="e.g., 35.695">
-        
-        <label for="lon">Longitude (Lon):</label>
-        <input type="number" step="0.0001" id="lon" value="77.1025" placeholder="e.g., 139.70">
-        
-        <button onclick="simulateMove()">Simulate Move & Check Alert</button>
+        <button onclick="autoDetectAndMove()">Auto-Detect GPS & Check Alert</button>
         
         <div id="simulation-status">Awaiting input...</div>
         
         <div class="location-buttons">
-            <p style="font-size: 14px; color: #555; margin-bottom: 5px;">Quick Locations:</p>
+            <p style="font-size: 14px; color: #555; margin-bottom: 5px;">Quick Locations (for Testing):</p>
             <button onclick="setSimulatedLocation(101, 35.695, 139.70)">User 101 near Tokyo</button>
             <button onclick="setSimulatedLocation(102, 40.7578, -73.9855)">User 102 near Times Square</button>
             <button onclick="setSimulatedLocation(103, 39.5473, -107.3247)">User 103 near Colorado</button>
             <button onclick="setSimulatedLocation(101, 28.7041, 77.1025)">User 101 - Far Away (Delhi)</button>
         </div>
     </div>
-    </div>
+</div>
 
 {% if hourly_preds %}
     <h3>Next 24 Hours Hourly Traffic Predictions (Starting Now)</h3>
@@ -401,38 +397,14 @@ function submitCustomDates() {
 // Location Simulation Functions 
 // -------------------------------------------------
 
-function setSimulatedLocation(userId, lat, lon) {
-    document.getElementById('userId').value = userId;
-    document.getElementById('lat').value = lat;
-    document.getElementById('lon').value = lon;
-    simulateMove();
-}
-
-async function simulateMove() {
-    const userId = document.getElementById('userId').value;
-    const lat = document.getElementById('lat').value;
-    const lon = document.getElementById('lon').value;
-    const statusDiv = document.getElementById('simulation-status');
-
-    if (!userId || !lat || !lon) {
-        statusDiv.style.backgroundColor = '#f8d7da';
-        statusDiv.style.color = '#721c24';
-        statusDiv.innerHTML = 'Error: All fields are required.';
-        return;
-    }
-
-    statusDiv.style.backgroundColor = '#fff3cd';
-    statusDiv.style.color = '#856404';
-    statusDiv.innerHTML = 'Sending simulation request...';
-
+// Helper to send data to the backend API
+async function sendGpsToBackend(userId, lat, lon, statusDiv) {
     const data = { user_id: userId, lat: parseFloat(lat), lon: parseFloat(lon) };
     
     try {
         const response = await fetch('/move_user', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
         });
 
@@ -450,8 +422,74 @@ async function simulateMove() {
     } catch (error) {
         statusDiv.style.backgroundColor = '#f8d7da';
         statusDiv.style.color = '#721c24';
-        statusDiv.innerHTML = `Network Error: Could not connect to Flask backend. Is 'app.py' running?`;
+        statusDiv.innerHTML = `Network Error: Could not connect to Flask backend.`;
     }
+}
+
+// Function used by the Quick Locations buttons (manual input for testing specific locations)
+function setSimulatedLocation(userId, lat, lon) {
+    document.getElementById('userId').value = userId;
+    
+    const statusDiv = document.getElementById('simulation-status');
+    statusDiv.style.backgroundColor = '#fff3cd';
+    statusDiv.style.color = '#856404';
+    statusDiv.innerHTML = `Manual Location Set: (${lat}, ${lon}). Sending to server...`;
+    
+    sendGpsToBackend(userId, lat, lon, statusDiv);
+}
+
+// Function to use the browser's Geolocation API (new automatic method)
+async function autoDetectAndMove() {
+    const userId = document.getElementById('userId').value;
+    const statusDiv = document.getElementById('simulation-status');
+
+    if (!userId) {
+        statusDiv.style.backgroundColor = '#f8d7da';
+        statusDiv.style.color = '#721c24';
+        statusDiv.innerHTML = 'Error: User ID is required.';
+        return;
+    }
+
+    statusDiv.style.backgroundColor = '#fff3cd';
+    statusDiv.style.color = '#856404';
+    statusDiv.innerHTML = 'Requesting GPS location from browser...';
+
+    // 1. Check for Geolocation support
+    if (!navigator.geolocation) {
+        statusDiv.style.backgroundColor = '#f8d7da';
+        statusDiv.style.color = '#721c24';
+        statusDiv.innerHTML = 'Error: Geolocation is not supported by your browser.';
+        return;
+    }
+
+    // 2. Get the current position
+    navigator.geolocation.getCurrentPosition(
+        async (position) => {
+            const lat = position.coords.latitude;
+            const lon = position.coords.longitude;
+            
+            // 3. Send the detected coordinates to the backend API
+            statusDiv.innerHTML = `GPS Detected: (${lat.toFixed(4)}, ${lon.toFixed(4)}). Sending to server...`;
+
+            await sendGpsToBackend(userId, lat, lon, statusDiv);
+        },
+        (error) => {
+            // 4. Handle errors (e.g., user denied permission)
+            let errorMessage = 'GPS Error. Make sure location services are enabled.';
+            if (error.code === error.PERMISSION_DENIED) {
+                errorMessage = 'Error: User denied Geolocation access.';
+            }
+            statusDiv.style.backgroundColor = '#f8d7da';
+            statusDiv.style.color = '#721c24';
+            statusDiv.innerHTML = errorMessage;
+        },
+        // Geolocation Options (optional but recommended)
+        {
+            enableHighAccuracy: true,
+            timeout: 5000,
+            maximumAge: 0
+        }
+    );
 }
 </script>
 

@@ -67,7 +67,7 @@ except Exception:
 # ------------------------------
 CAPTURE_WIDTH = 640
 CAPTURE_HEIGHT = 360
-PROCESS_FPS = 2
+PROCESS_FPS = 5
 QUEUE_MAXSIZE = 3
 PRED_INTERVAL_SECONDS = 10
 
